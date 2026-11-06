@@ -5,3 +5,5 @@ It offers real-time messaging that can be either public or private. Users can ex
 direct messages and join group channels.
 IRC clients connect to IRC servers in order to join channels. IRC servers are connected
 together to form a network.
+
+You are required to develop an IRC server using the C++ 98 standard.
