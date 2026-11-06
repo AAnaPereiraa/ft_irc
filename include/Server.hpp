@@ -13,6 +13,7 @@ class Server
 		Server(int port, const std::string &password);
 		int getPort() const;
 		const std::string &getPassword() const;
+		~Server();
 };
 
 #endif
