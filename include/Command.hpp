@@ -16,7 +16,7 @@ class Command
         };
 
         Command();
-
+        // The caller must strip the line terminator (\r\n or \n) before parsing.
         static ParseStatus  parse(const std::string &line, Command &out);
 
         const std::string               &getPrefix() const;

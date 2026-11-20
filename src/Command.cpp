@@ -28,12 +28,14 @@ Command::ParseStatus Command::parse(const std::string &line, Command &out)
         {
             unsigned char c = static_cast<unsigned char>(parsed._prefix[j]);
 
-            if (c <= 0x20 || c == 0x7f || c == ':')
-                return PARSE_MALFORMED;
+            if (c <= 0x20 || c == 0x7f)
+                return (PARSE_MALFORMED);
         }
         parsed._hasPrefix = true;
         i = prefixEnd + 1;
-        if (i == line.size() || line[i] == ' ')
+        while (i < line.size() && line[i] == ' ')
+            ++i;
+        if (i == line.size())
             return (PARSE_MALFORMED);
     }
 
@@ -42,7 +44,7 @@ Command::ParseStatus Command::parse(const std::string &line, Command &out)
     if (commandEnd == std::string::npos)
         commandEnd = line.size();
     if (commandEnd == i)
-        return PARSE_MALFORMED;
+        return (PARSE_MALFORMED);
 
     parsed._name = line.substr(i, commandEnd - i);
 
@@ -62,7 +64,7 @@ Command::ParseStatus Command::parse(const std::string &line, Command &out)
     }
 
     if (!allLetters && !threeDigits)
-        return PARSE_MALFORMED;
+        return (PARSE_MALFORMED);
 
     i = commandEnd;
 
@@ -71,42 +73,35 @@ Command::ParseStatus Command::parse(const std::string &line, Command &out)
 
     while (i < line.size())
     {
-        if (line[i] != ' ')
-            return PARSE_MALFORMED;
-
-        ++i;
-        if (i == line.size() || line[i] == ' ')
-            return PARSE_MALFORMED;
+        while (i < line.size() && line[i] == ' ')
+            ++i;
+        if (i == line.size())
+            break;
 
         if (line[i] == ':')
         {
             parsed._params.push_back(line.substr(i + 1));
             parsed._hasTrailingParam = true;
             ++paramCount;
-
             if (paramCount > 15)
-                return PARSE_TOO_MANY_PARAMS;
-
-            i = line.size();
+                return (PARSE_TOO_MANY_PARAMS);
             break;
         }
 
         std::string::size_type paramEnd = line.find(' ', i);
-
         if (paramEnd == std::string::npos)
             paramEnd = line.size();
 
         parsed._params.push_back(line.substr(i, paramEnd - i));
         ++paramCount;
-
         if (paramCount > 15)
-            return PARSE_TOO_MANY_PARAMS;
+            return (PARSE_TOO_MANY_PARAMS);
 
         i = paramEnd;
     }
 
     out = parsed;
-    return PARSE_SUCCESS;
+    return (PARSE_SUCCESS);
 }
 
 const std::string   &Command::getPrefix() const
