@@ -2,13 +2,24 @@
 # define SERVER_HPP
 
 # include <string>
+# include <vector>
+# include <map>
+# include <poll.h>
+
+class Client;
 
 class Server
 {
 	private:
-		int			_port;
-		std::string	_password;
-		int			_listenFd;	// -1 while no socket is open
+		int						_port;
+		std::string				_password;
+		int						_listenFd;	// -1 while no socket is open
+
+		// The single poll set: index 0 is the listening socket,
+		// every other entry is a client socket.
+		std::vector<pollfd>		_pollFds;
+		// Every connected client, by socket fd. The Server owns them.
+		std::map<int, Client *>	_clients;
 
 		// The server owns _listenFd: a copy would close the same fd twice.
 		// Declared private and never implemented to forbid copying (C++98).
@@ -18,6 +29,10 @@ class Server
 		void	closeListeningSocket();
 		void	failListeningSocket(const std::string &step);
 
+		void	acceptClients();
+		bool	readFromClient(size_t index);
+		void	disconnectClient(size_t index);
+
 	public:
 		Server(int port, const std::string &password);
 		~Server();
@@ -25,6 +40,10 @@ class Server
 		// socket -> setsockopt -> fcntl -> bind -> listen.
 		// Throws std::runtime_error on failure (the fd is closed first).
 		void				initListeningSocket();
+
+		// Runs the poll() loop until SIGINT/SIGTERM.
+		// Throws std::runtime_error if poll() itself fails.
+		void				run();
 
 		int					getPort() const;
 		const std::string	&getPassword() const;
