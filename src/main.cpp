@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cerrno>
+#include <exception>
 #include "Server.hpp"
 
 bool isDigit(const char *arg)
@@ -44,7 +45,18 @@ int main(int argc, char **argv)
 
 	int port = static_cast<int>(parsedPort);
 	std::string password = argv[2];
-	Server server(port, password);
+
+	try
+	{
+		Server server(port, password);
+		server.initListeningSocket();
+		std::cout << "Listening on port " << server.getPort() << std::endl;
+	}
+	catch (const std::exception &e)
+	{
+		std::cerr << "Error: " << e.what() << std::endl;
+		return 1;
+	}
 
 	return 0;
 }

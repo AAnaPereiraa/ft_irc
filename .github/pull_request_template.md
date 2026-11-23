@@ -13,3 +13,9 @@
 - [ ] C++98 compatibility is preserved.
 - [ ] No generated files or credentials are included.
 - [ ] I have reviewed the changes and understand the implementation.
+
+## Close issue
+
+add at the end of PR 
+
+close #ISSUE NUMBER
