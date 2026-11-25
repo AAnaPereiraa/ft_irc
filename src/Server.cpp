@@ -1,5 +1,6 @@
 #include "Server.hpp"
 #include "Client.hpp"
+#include "Command.hpp"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -252,10 +253,52 @@ bool Server::readFromClient(size_t index)
 		return false;
 	}
 
-	// TODO(input buffering issue): append to the client's buffer and
-	// extract complete "\r\n" lines. For now, just show what arrived.
-	std::cout << "[fd " << fd << "] " << std::string(buffer, bytes) << std::flush;
+	// 1. Append: never process the raw recv() chunk directly, it may be
+	//    half a message or several messages glued together.
+	Client *client = _clients[fd];
+	client->appendToBuffer(buffer, static_cast<size_t>(bytes));
+
+	// 2. Extract every complete line currently in the buffer.
+	std::string line;
+	while (client->extractLine(line))
+		handleLine(*client, line);
+	// TODO(command dispatch issue): once commands can disconnect a client
+	// (QUIT, failed PASS...), stop this loop and return false when that
+	// happens -- `client` would point to deleted memory.
+
+	// 3. Whatever is left is an incomplete line, kept for the next recv().
+	//    A valid line is at most 512 bytes including "\r\n", so a leftover
+	//    of 512+ bytes can never become valid. Drop the client instead of
+	//    letting it grow the buffer forever.
+	if (client->bufferSize() >= MAX_LINE_LEN)
+	{
+		std::cerr << "[fd " << fd << "] line too long, disconnecting" << std::endl;
+		disconnectClient(index);
+		return false;
+	}
 	return true;
+}
+
+// Handles one complete IRC line (terminator already stripped).
+void Server::handleLine(Client &client, const std::string &line)
+{
+	// RFC 2812: empty messages are silently ignored.
+	if (line.empty())
+		return;
+
+	Command					cmd;
+	Command::ParseStatus	status = Command::parse(line, cmd);
+
+	// TODO(command dispatch issue): send the matching numeric error
+	// (e.g. 417 ERR_INPUTTOOLONG) and execute the command.
+	if (status != Command::PARSE_SUCCESS)
+	{
+		std::cout << "[fd " << client.getFd() << "] parse error (" << status
+				  << "): " << line << std::endl;
+		return;
+	}
+	std::cout << "[fd " << client.getFd() << "] command: " << cmd.getName()
+			  << " (" << cmd.getParams().size() << " params)" << std::endl;
 }
 
 // Closes the client's socket, frees the Client and removes its poll entry.
