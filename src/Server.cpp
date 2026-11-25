@@ -173,7 +173,7 @@ void Server::run()
 				continue;
 			}
 
-			// Socket error or invalid fd: nothing useful left to read.
+			// Socket error or invalid fd: nothing useful left to do.
 			if (revents & (POLLERR | POLLNVAL))
 			{
 				disconnectClient(i);
@@ -182,17 +182,25 @@ void Server::run()
 
 			// Read before handling POLLHUP: a client may send data and close
 			// at once, and recv() returns 0 once that data is consumed.
+			// Each handler returns false if it removed entry i, in which case
+			// the next fd now sits in slot i and must not be skipped.
 			if (revents & POLLIN)
 			{
-				if (readFromClient(i))
-					++i;
-				continue;
+				if (!readFromClient(i))
+					continue;
 			}
-
-			if (revents & POLLHUP)
+			else if (revents & POLLHUP)
 			{
 				disconnectClient(i);
 				continue;
+			}
+
+			// No `continue` after reading: the same round can also be
+			// writable. POLLOUT is only set while output is pending.
+			if (revents & POLLOUT)
+			{
+				if (!flushClient(i))
+					continue;
 			}
 
 			++i;
@@ -299,6 +307,61 @@ void Server::handleLine(Client &client, const std::string &line)
 	}
 	std::cout << "[fd " << client.getFd() << "] command: " << cmd.getName()
 			  << " (" << cmd.getParams().size() << " params)" << std::endl;
+}
+
+// Queues a message for a client and asks poll() to report when its socket
+// is writable. Nothing is sent here: every send() happens in flushClient(),
+// after poll() has said the socket can take data.
+void Server::sendToClient(Client &client, const std::string &msg)
+{
+	client.queueMessage(msg);
+	setPollOut(client.getFd(), true);
+}
+
+// Turns POLLOUT on or off in a client's poll entry. It is only on while
+// output is pending: a socket is writable almost all the time, so leaving
+// it on would wake poll() constantly with nothing to send (busy loop).
+void Server::setPollOut(int fd, bool enable)
+{
+	for (size_t i = 0; i < _pollFds.size(); ++i)
+	{
+		if (_pollFds[i].fd != fd)
+			continue;
+		if (enable)
+			_pollFds[i].events |= POLLOUT;
+		else
+			_pollFds[i].events &= ~POLLOUT;
+		return;
+	}
+}
+
+// Called only after poll() reported POLLOUT for this client.
+// Returns false if the client was disconnected (its entry was erased).
+bool Server::flushClient(size_t index)
+{
+	const int	fd = _pollFds[index].fd;
+	Client		*client = _clients[fd];
+
+	const std::string &out = client->getOutBuffer();
+	if (out.empty())	// safety net: nothing to send, stop asking
+	{
+		setPollOut(fd, false);
+		return true;
+	}
+
+	// send() returns how many bytes the kernel accepted, which can be
+	// fewer than out.size(). Only the return value is checked, never errno.
+	ssize_t sent = send(fd, out.data(), out.size(), 0);
+	if (sent == -1)
+	{
+		disconnectClient(index);
+		return false;
+	}
+
+	client->consumeOutput(static_cast<size_t>(sent));
+	if (!client->hasPendingOutput())
+		setPollOut(fd, false);	// all sent: back to POLLIN only
+	return true;
 }
 
 // Closes the client's socket, frees the Client and removes its poll entry.

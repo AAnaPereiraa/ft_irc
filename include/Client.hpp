@@ -15,6 +15,11 @@ class Client
 		// stays here across poll() iterations until a full line has arrived.
 		std::string	_inBuffer;
 
+		// Bytes queued for this client but not yet accepted by send().
+		// send() may take only part of what we give it (the kernel's socket
+		// buffer is full), so the rest waits here for the next POLLOUT.
+		std::string	_outBuffer;
+
 		// Not copyable: a copy would share the same socket fd.
 		Client(const Client &other);
 		Client &operator=(const Client &other);
@@ -36,6 +41,16 @@ class Client
 
 		// Bytes still waiting for their line terminator.
 		size_t	bufferSize() const;
+
+		// Queues one IRC message. `msg` is given WITHOUT "\r\n": it is
+		// appended here so no reply can ever forget its terminator.
+		void				queueMessage(const std::string &msg);
+
+		bool				hasPendingOutput() const;
+		const std::string	&getOutBuffer() const;
+
+		// Removes the first `count` bytes, i.e. the ones send() accepted.
+		void				consumeOutput(size_t count);
 };
 
 #endif

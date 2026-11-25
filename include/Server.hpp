@@ -37,6 +37,10 @@ class Server
 		void	disconnectClient(size_t index);
 		void	handleLine(Client &client, const std::string &line);
 
+		void	sendToClient(Client &client, const std::string &msg);
+		void	setPollOut(int fd, bool enable);
+		bool	flushClient(size_t index);
+
 	public:
 		Server(int port, const std::string &password);
 		~Server();
