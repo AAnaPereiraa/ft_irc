@@ -8,6 +8,9 @@
 
 class Client;
 
+// Max IRC message length, "\r\n" included (RFC 2812, section 2.3).
+static const size_t	MAX_LINE_LEN = 512;
+
 class Server
 {
 	private:
@@ -32,6 +35,11 @@ class Server
 		void	acceptClients();
 		bool	readFromClient(size_t index);
 		void	disconnectClient(size_t index);
+		void	handleLine(Client &client, const std::string &line);
+
+		void	sendToClient(Client &client, const std::string &msg);
+		void	setPollOut(int fd, bool enable);
+		bool	flushClient(size_t index);
 
 	public:
 		Server(int port, const std::string &password);
