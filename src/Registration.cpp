@@ -1,6 +1,8 @@
 #include "Registration.hpp"
 #include "Client.hpp"
 #include "Command.hpp"
+#include "Server.hpp"
+#include "Reply.hpp"
 #include <vector>
 
 // RFC 2812, section 2.3.1: validates the USER <user> field.
@@ -18,87 +20,91 @@ static bool isValidUsername(const std::string &username)
     return (true);
 }
 
-Registration::PassResult    Registration::handlePass(Client &client, const Command &command, const std::string &serverPassword)
+bool Registration::handlePass(Server &server, Client &client, const Command &command, const std::string &serverName)
 {
-    if (command.getName() != "PASS")
-        return (PASS_NOT_PASS_COMMAND);
-
     if (client.isRegistered())
-        return (PASS_ALREADY_REGISTERED);
+    {
+        server.sendToClient(client, Reply::numeric(serverName, client, "462", "", "Unauthorized command (already registered)"));
+        return (false);
+    }
 
-    const std::vector<std::string>  &params = command.getParams();
+    const std::vector<std::string> &params = command.getParams();
+
     if (params.empty())
-        return (PASS_MISSING_PARAMETER);
-    if (params.size() != 1)
-        return (PASS_INVALID_PARAMETER_COUNT);
+    {
+        server.sendToClient(client, Reply::numeric(serverName, client, "461", "PASS", "Not enough parameters"));
+        return (false);
+    }
 
-// Current policy: reject PASS once both NICK and USER information are present.
-    if (client.hasNickname() && client.hasUserInfo())
-        return (PASS_OUT_OF_ORDER);
-
-    if (params[0] != serverPassword)
-        return (PASS_PASSWORD_MISMATCH);
+    if (params[0] != server.getPassword())
+    {
+        server.sendToClient(client, Reply::numeric(serverName, client, "464", "", "Password incorrect"));
+        return (false);
+    }
 
     client.markPasswordAccepted();
-    return (PASS_ACCEPTED);
+    return (true);
 }
 
-Registration::UserResult    Registration::handleUser(Client &client, const Command &command)
+bool Registration::handleUser(Server &server, Client &client, const Command &command, const std::string &serverName)
 {
-    if (command.getName() != "USER")
-        return (USER_NOT_USER_COMMAND);
-
     if (client.isRegistered())
-        return (USER_ALREADY_REGISTERED);
+    {
+        server.sendToClient(client, Reply::numeric(
+            serverName, client, "462", "",
+            "Unauthorized command (already registered)"));
+        return (false);
+    }
 
     if (!client.hasAcceptedPassword())
-        return (USER_PASS_REQUIRED);
+    {
+        server.sendToClient(client, Reply::numeric(
+            serverName, client, "464", "", "Password required"));
+        return (false);
+    }
 
-// RFC 2812 USER has four fields: <user> <mode> <unused> <realname>.
     const std::vector<std::string> &params = command.getParams();
+
     if (params.size() < 4)
-        return (USER_MISSING_PARAMETERS);
-    if (params.size() > 4)
-        return (USER_INVALID_PARAMETER_COUNT);
+    {
+        server.sendToClient(client, Reply::numeric(
+            serverName, client, "461", "USER", "Not enough parameters"));
+        return (false);
+    }
 
     if (!isValidUsername(params[0]))
-        return (USER_INVALID_USERNAME);
-
-// RFC 2812 requires <mode> to be numeric.
-    bool numericMode = !params[1].empty();
-    for (std::string::size_type i = 0; i < params[1].size(); ++i)
     {
-        if (params[1][i] < '0' || params[1][i] > '9')
-            numericMode = false;
+        server.sendToClient(client, Reply::numeric(
+            serverName, client, "400", "USER", "Invalid username"));
+        return (false);
     }
-    if (!numericMode)
-        return (USER_INVALID_MODE);
 
     client.setUserInfo(params[0], params[3]);
-    return (USER_ACCEPTED);
+    return (true);
 }
 
-Registration::NickResult    Registration::handleNick(Client &client, const Command &command, bool nicknameInUse)
+bool Registration::handleNick(Server &server, Client &client, const Command &command, const std::string &serverName)
 {
-    if (command.getName() != "NICK")
-        return (NICK_NOT_NICK_COMMAND);
-
     if (!client.isRegistered() && !client.hasAcceptedPassword())
-        return (NICK_PASS_REQUIRED);
+    {
+        server.sendToClient(client, Reply::numeric(serverName, client, "464", "", "Password required"));
+        return (false);
+    }
 
     const std::vector<std::string> &params = command.getParams();
-    if (params.empty())
-        return (NICK_MISSING_PARAMETER);
-    if (params.size() != 1)
-        return (NICK_INVALID_PARAMETER_COUNT);
 
-// RFC 2812, section 1.2.1: nickname length is limited to nine characters.
+    if (params.empty() || params[0].empty())
+    {
+        server.sendToClient(client, Reply::numeric(serverName, client, "431", "", "No nickname given"));
+        return (false);
+    }
+
     const std::string &nickname = params[0];
-    if (nickname.empty() || nickname.size() > 9)
-        return (NICK_INVALID_NICKNAME);
 
-// RFC 2812, section 2.3.1: validates the nickname character grammar.
-    for (std::string::size_type i = 0; i < nickname.size(); ++i)
+    // RFC 2812, sections 1.2.1 and 2.3.1.
+    bool validNick = nickname.size() <= 9;
+
+    for (std::string::size_type i = 0; validNick && i < nickname.size(); ++i)
     {
         unsigned char c = nickname[i];
 
@@ -107,18 +113,42 @@ Registration::NickResult    Registration::handleNick(Client &client, const Comma
         bool special = (c >= '[' && c <= '`') || (c >= '{' && c <= '}');
 
         if (i == 0)
-        {
-            if (!letter && !special)
-                return (NICK_INVALID_NICKNAME);
-        }
-        else if (!letter && !digit && !special && c != '-')
-            return (NICK_INVALID_NICKNAME);
+            validNick = letter || special;
+        else
+            validNick = letter || digit || special || c == '-';
     }
 
-// The caller checks the live client collection for a nickname collision.
-    if (nicknameInUse)
-        return (NICK_ALREADY_IN_USE);
+    if (!validNick)
+    {
+        std::string replyNick = nickname;
+
+        if (replyNick.size() > 9 || replyNick[0] == ':')
+            replyNick = "*";
+        else
+        {
+            for (std::string::size_type i = 0; i < replyNick.size(); ++i)
+            {
+                unsigned char c = replyNick[i];
+                if (c < 33 || c > 126)
+                {
+                    replyNick = "*";
+                    break;
+                }
+            }
+        }
+
+        server.sendToClient(client, Reply::numeric(serverName, client, "432", replyNick, "Erroneous nickname"));
+        return (false);
+    }
+
+    Client *existing = server.findClientByNick(nickname);
+
+    if (existing != NULL && existing != &client)
+    {
+        server.sendToClient(client, Reply::numeric(serverName, client, "433", nickname, "Nickname is already in use"));
+        return (false);
+    }
 
     client.setNickname(nickname);
-    return (NICK_ACCEPTED);
+    return (true);
 }

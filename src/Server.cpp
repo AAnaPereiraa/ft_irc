@@ -420,3 +420,37 @@ int Server::getListenFd() const
 {
 	return _listenFd;
 }
+
+static bool sameNickname(const std::string &first, const std::string &second)
+{
+    if (first.size() != second.size())
+        return (false);
+
+    for (std::string::size_type i = 0; i < first.size(); ++i)
+    {
+        unsigned char a = first[i];
+        unsigned char b = second[i];
+
+        if (a >= 'A' && a <= 'Z')
+            a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z')
+            b += 'a' - 'A';
+
+        if (a != b)
+            return (false);
+    }
+    return (true);
+}
+
+Client *Server::findClientByNick(const std::string &nick) const
+{
+    for (std::map<int, Client *>::const_iterator it = _clients.begin();
+         it != _clients.end(); ++it)
+    {
+        Client *client = it->second;
+
+        if (client->hasNickname() && sameNickname(client->getNickname(), nick))
+            return (client);
+    }
+    return (NULL);
+}
