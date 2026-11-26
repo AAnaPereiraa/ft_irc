@@ -2,3 +2,4 @@ ircserv
 obj/
 *.o
 *.d
+tests/.logs/

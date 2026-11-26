@@ -35,8 +35,6 @@ jobs:
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
+      # Normal run + valgrind run (leaks, memory errors, open sockets).
       - name: Integration tests
         run: make test
-
-      - name: Integration tests under valgrind (leaks, open fds)
-        run: make test-valgrind
