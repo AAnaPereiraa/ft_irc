@@ -31,6 +31,14 @@ fclean: clean
 
 re: fclean all
 
+# Integration tests (tests/test_server.py), also run by GitHub Actions.
+# Integration tests: a normal pass, then a pass with the server under
+# valgrind (fails on leaks, memory errors or sockets left open).
+#   make test FULL=1   also print every valgrind report
+#   make test FAST=1   skip the valgrind pass
+test: $(NAME)
+	@python3 tests/test_server.py $(if $(FULL),--full-report) $(if $(FAST),--no-valgrind)
+
 -include $(DEPS)
 
-.PHONY: all clean fclean re
+.PHONY: all clean fclean re test

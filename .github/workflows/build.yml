@@ -1,5 +1,7 @@
 name: Build
 
+# When this workflow runs: on every pull request (opened or new commits
+# pushed to it), and on every push to main (e.g. after a merge).
 on:
   pull_request:
   push:
@@ -7,6 +9,7 @@ on:
       - main
 
 jobs:
+  # Each job runs on its own fresh Ubuntu virtual machine, in parallel.
   build:
     runs-on: ubuntu-latest
 
@@ -16,3 +19,22 @@ jobs:
 
       - name: Build
         run: make re
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10       # a hanging test must not block the PR forever
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make re
+
+      # python3 is preinstalled on the runner; valgrind is not.
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      # Normal run + valgrind run (leaks, memory errors, open sockets).
+      - name: Integration tests
+        run: make test
