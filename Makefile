@@ -31,12 +31,15 @@ fclean: clean
 re: fclean all
 
 # Integration tests (tests/test_server.py), also run by GitHub Actions.
+# Runs every test twice: normally, then with the server under valgrind.
+# Fails on a failed test, a memory leak/error or a socket left open.
 test: $(NAME)
+	@command -v valgrind >/dev/null 2>&1 || { echo "make test: valgrind is not installed"; exit 1; }
+	@echo "=== Integration tests ==="
 	python3 tests/test_server.py
-
-test-valgrind: $(NAME)
+	@echo "=== Integration tests under valgrind ==="
 	VALGRIND=1 python3 tests/test_server.py
 
 -include $(DEPS)
 
-.PHONY: all clean fclean re test test-valgrind
+.PHONY: all clean fclean re test

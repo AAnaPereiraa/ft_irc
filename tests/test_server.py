@@ -14,8 +14,12 @@ several recv() calls. When commands start answering (PING -> PONG, 001...),
 add tests that check the replies.
 
 Run:
-    make test                 # normal run
-    make test-valgrind        # same tests, server under valgrind
+    make test       # runs every test twice: normally, then with the server
+                    # under valgrind (leaks, memory errors, open sockets),
+                    # and prints valgrind's full report for each server run
+
+    python3 tests/test_server.py              # quick run, no valgrind
+    VALGRIND=1 python3 tests/test_server.py   # valgrind run only
 """
 
 import os
@@ -23,6 +27,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -42,8 +47,8 @@ VALGRIND_CMD = [
     "valgrind",
     "--error-exitcode=42",          # any memory error or leak -> exit 42
     "--leak-check=full",
-    "--show-leak-kinds=definite,indirect",
-    "--errors-for-leak-kinds=definite,indirect",
+    "--show-leak-kinds=all",        # full report, still-reachable included
+    "--errors-for-leak-kinds=definite,indirect",   # these fail the test
     "--track-fds=yes",              # report fds still open at exit
 ]
 
@@ -58,7 +63,8 @@ def free_port():
 class Server:
     """Starts ./ircserv in the background and stops it with SIGINT."""
 
-    def __init__(self):
+    def __init__(self, label):
+        self.label = label          # shown in the valgrind report header
         self.port = free_port()
         self.tmp = tempfile.mkdtemp(prefix="ircserv-test-")
         self.log_path = os.path.join(self.tmp, "server.log")
@@ -111,8 +117,12 @@ class Server:
             # not ours. A leaked client or listening socket shows up here.
             if re.search(r"Open AF_INET6? socket", vg):
                 problems.append("sockets still open at exit")
-            if problems:
-                problems.append("--- valgrind log ---\n" + vg)
+            # Always show the full report, so leaks can be read even when
+            # nothing failed (e.g. "still reachable" memory).
+            bar = "=" * 70
+            sys.stderr.write("\n%s\nvalgrind report: %s\n%s\n%s%s\n"
+                             % (bar, self.label, bar, vg, bar))
+            sys.stderr.flush()
         self.log.close()
         if problems:
             problems.append("--- server output ---\n" + self.output())
@@ -130,7 +140,7 @@ class IrcTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = Server()
+        cls.server = Server(cls.__name__)
         cls.server.start()
 
     @classmethod
@@ -299,7 +309,7 @@ class TestShutdown(unittest.TestCase):
     """SIGINT with clients still connected: exit 0, nothing leaked."""
 
     def test_sigint_with_connected_clients(self):
-        server = Server()
+        server = Server(self.id().split('.')[-1])
         server.start()
         clients = []
         try:
