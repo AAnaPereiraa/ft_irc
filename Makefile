@@ -30,6 +30,13 @@ fclean: clean
 
 re: fclean all
 
+# Integration tests (tests/test_server.py), also run by GitHub Actions.
+test: $(NAME)
+	python3 tests/test_server.py
+
+test-valgrind: $(NAME)
+	VALGRIND=1 python3 tests/test_server.py
+
 -include $(DEPS)
 
-.PHONY: all clean fclean re
+.PHONY: all clean fclean re test test-valgrind

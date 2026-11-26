@@ -167,6 +167,10 @@ void Server::run()
 
 			if (_pollFds[i].fd == _listenFd)
 			{
+				// The listening socket itself broke: no new client can ever
+				// connect again, so stop. The destructor closes every fd.
+				if (revents & (POLLERR | POLLHUP | POLLNVAL))
+					throw std::runtime_error("poll: error on listening socket");
 				if (revents & POLLIN)
 					acceptClients();
 				++i;
@@ -234,13 +238,29 @@ void Server::acceptClients()
 			continue;
 		}
 
-		_clients[fd] = new Client(fd);
-
 		pollfd entry;
 		entry.fd = fd;
 		entry.events = POLLIN;
 		entry.revents = 0;
-		_pollFds.push_back(entry);
+
+		// new, map insertion and push_back can all throw std::bad_alloc.
+		// If any of them does, undo what was done so the fd is not leaked
+		// and the map and poll set stay consistent with each other.
+		Client *client = NULL;
+		try
+		{
+			client = new Client(fd);
+			_clients[fd] = client;
+			_pollFds.push_back(entry);
+		}
+		catch (const std::exception &e)
+		{
+			_clients.erase(fd);
+			delete client;		// delete NULL is a no-op
+			close(fd);
+			std::cerr << "accept: dropped client: " << e.what() << std::endl;
+			return;	// out of memory: retry on the next POLLIN, don't spin here
+		}
 
 		std::cout << "Client connected: fd " << fd
 				  << " from " << inet_ntoa(addr.sin_addr) << std::endl;
