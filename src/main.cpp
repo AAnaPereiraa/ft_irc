@@ -51,6 +51,7 @@ int main(int argc, char **argv)
 		Server server(port, password);
 		server.initListeningSocket();
 		std::cout << "Listening on port " << server.getPort() << std::endl;
+		server.run();
 	}
 	catch (const std::exception &e)
 	{
