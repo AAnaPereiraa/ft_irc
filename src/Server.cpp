@@ -22,6 +22,13 @@
 // leaves its loop normally, letting destructors close every fd.
 static volatile sig_atomic_t g_running = 1;
 
+// How long poll() may sleep before run() checks g_running again.
+// A signal handled after the `while (g_running)` check but before poll()
+// starts does not interrupt it, so an infinite timeout could miss the
+// shutdown and sleep forever. Waking once a second bounds that delay.
+// (The usual fixes -- self-pipe, ppoll, signalfd -- are not allowed.)
+static const int POLL_TIMEOUT_MS = 1000;
+
 static void handleStopSignal(int signum)
 {
 	(void)signum;
@@ -142,8 +149,10 @@ void Server::run()
 
 	while (g_running)
 	{
-		// The one and only poll(): sleep until some fd is ready (-1 = no timeout).
-		if (poll(&_pollFds[0], _pollFds.size(), -1) == -1)
+		// The one and only poll(): sleep until some fd is ready, or at most
+		// POLL_TIMEOUT_MS. A timeout returns 0 with every revents at 0, so
+		// the loop below does nothing and g_running is checked again.
+		if (poll(&_pollFds[0], _pollFds.size(), POLL_TIMEOUT_MS) == -1)
 		{
 			if (errno == EINTR)	// interrupted by a signal: re-check g_running
 				continue;
