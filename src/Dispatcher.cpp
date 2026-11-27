@@ -65,7 +65,10 @@ bool Dispatcher::rejectBeforeRegistration(Server &server, Client &client, const 
     if (client.isRegistered() || !isKnownCommand(name))
         return (false);
 
-    if (name == "PASS" || name == "NICK" || name == "USER" || name == "PING" || name == "PONG" || name == "QUIT" || name == "NOTICE")
+    if (name == "NOTICE")
+        return (true);
+
+    if (name == "PASS" || name == "NICK" || name == "USER" || name == "PING" || name == "PONG" || name == "QUIT")
         return (false);
 
     server.sendToClient(client, Reply::numeric(serverName, client, "451", "", "You have not registered"));
@@ -76,15 +79,14 @@ bool Dispatcher::dispatch(Server &server, Client &client, const Command &command
 {
     accepted = false;
 
-    // NOTICE delivery is not implemented yet; discard it without an error.
-    if (command.getName() == "NOTICE")
-        return (true);
-
     if (rejectBeforeRegistration(server, client, command, serverName))
         return (true);
 
     if (!dispatchHandler(server, client, command, serverName, accepted))
     {
+        if (command.getName() == "NOTICE")
+            return (true);
+
         if (isKnownCommand(command.getName()))
             return (false);
 
