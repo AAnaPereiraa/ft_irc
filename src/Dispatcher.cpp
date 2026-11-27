@@ -4,73 +4,103 @@
 #include "Client.hpp"
 #include "Server.hpp"
 #include "Reply.hpp"
-#include <vector>
 
-bool Dispatcher::dispatchRegistration(Server &server, Client &client, const Command &command, const std::string &serverName, bool &accepted)
+typedef bool (*CommandHandler)(Server &, Client &, const Command &, const std::string &);
+
+struct CommandEntry
+{
+    const char *name;
+    CommandHandler handler;
+};
+
+static const CommandEntry commands[] = {
+    {"PASS", Registration::handlePass},
+    {"NICK", Registration::handleNick},
+    {"USER", Registration::handleUser},
+    {"PING", 0},
+    {"PONG", 0},
+    {"QUIT", 0},
+    {"NOTICE", 0},
+    {"JOIN", 0},
+    {"PART", 0},
+    {"PRIVMSG", 0},
+    {"KICK", 0},
+    {"INVITE", 0},
+    {"TOPIC", 0},
+    {"MODE", 0}
+};
+
+static const CommandEntry *findCommand(const std::string &name)
+{
+    for (std::size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i)
+    {
+        if (name == commands[i].name)
+            return (&commands[i]);
+    }
+    return (0);
+}
+
+static bool isKnownCommand(const std::string &name)
+{
+    return (findCommand(name) != 0);
+}
+
+bool Dispatcher::dispatchHandler(Server &server, Client &client, const Command &command, const std::string &serverName, bool &accepted)
 {
     accepted = false;
 
-    if (command.getName() == "PASS")
-        accepted = Registration::handlePass(server, client, command, serverName);
-    else if (command.getName() == "NICK")
-        accepted = Registration::handleNick(server, client, command, serverName);
-    else if (command.getName() == "USER")
-        accepted = Registration::handleUser(server, client, command, serverName);
-    else
+    const CommandEntry *entry = findCommand(command.getName());
+
+    if (entry == 0 || entry->handler == 0)
         return (false);
 
+    accepted = entry->handler(server, client, command, serverName);
     return (true);
 }
 
 bool Dispatcher::rejectBeforeRegistration(Server &server, Client &client, const Command &command, const std::string &serverName)
 {
-    if (client.isRegistered())
-        return (false);
-
     const std::string &name = command.getName();
 
-    if (name != "JOIN" && name != "PART" && name != "PRIVMSG" && name != "KICK" && name != "INVITE" && name != "TOPIC" && name != "MODE")
+    if (client.isRegistered() || !isKnownCommand(name))
+        return (false);
+
+    if (name == "PASS" || name == "NICK" || name == "USER" || name == "PING" || name == "PONG" || name == "QUIT" || name == "NOTICE")
         return (false);
 
     server.sendToClient(client, Reply::numeric(serverName, client, "451", "", "You have not registered"));
     return (true);
 }
 
-bool Dispatcher::dispatch(Server &server, Client &client, const Command &command, const std::string &serverName, const std::string &hostname, const std::string &version, const std::string &creationDate, bool &accepted)
+bool Dispatcher::dispatch(Server &server, Client &client, const Command &command, const std::string &serverName, const std::string &version, const std::string &creationDate, bool &accepted)
 {
     accepted = false;
+
+    // NOTICE delivery is not implemented yet; discard it without an error.
+    if (command.getName() == "NOTICE")
+        return (true);
 
     if (rejectBeforeRegistration(server, client, command, serverName))
         return (true);
 
-    // Reject usernames that would make the 001 welcome exceed 512 bytes,
-    // including CRLF. Use the maximum nick length (9) so this also works
-    // when USER arrives before NICK; this is a conservative limit.
-    // Error 400 is project-specific, not defined by the RFC for USER.
-    const std::vector<std::string> &params = command.getParams();
-
-    if (command.getName() == "USER" && !client.isRegistered()
-        && client.hasAcceptedPassword() && params.size() >= 4)
+    if (!dispatchHandler(server, client, command, serverName, accepted))
     {
-        std::string longestNick(9, 'a');
-        std::string welcome = Reply::welcome(serverName, longestNick,
-                                             params[0], hostname);
+        if (isKnownCommand(command.getName()))
+            return (false);
 
-        if (welcome.size() > MAX_LINE_LEN - 2)
-        {
-            server.sendToClient(client, Reply::numeric(
-                serverName, client, "400", "USER",
-                "Username too long for welcome reply"));
-            return (true);
-        }
+        std::string reply = Reply::numeric(serverName, client, "421", command.getName(), "Unknown command");
+
+        // A very long command name may not fit in the numeric reply.
+        if (reply.size() > MAX_LINE_LEN - 2)
+            reply = Reply::numeric(serverName, client, "421", "*", "Unknown command");
+
+        server.sendToClient(client, reply);
+        return (true);
     }
-
-    if (!dispatchRegistration(server, client, command, serverName, accepted))
-        return (false);
 
     if (accepted && client.tryCompleteRegistration())
     {
-        server.sendToClient(client, Reply::welcome(serverName, client, hostname));
+        server.sendToClient(client, Reply::welcome(serverName, client, client.getHostname()));
         server.sendToClient(client, Reply::yourHost(serverName, client, version));
         server.sendToClient(client, Reply::created(serverName, client, creationDate));
         server.sendToClient(client, Reply::myInfo(serverName, client, version));
