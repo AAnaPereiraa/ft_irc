@@ -12,7 +12,8 @@ SRCS = $(SRC_DIR)/main.cpp \
        $(SRC_DIR)/Command.cpp \
 	   $(SRC_DIR)/Registration.cpp \
        $(SRC_DIR)/Reply.cpp \
-       $(SRC_DIR)/Dispatcher.cpp
+       $(SRC_DIR)/Dispatcher.cpp \
+       $(SRC_DIR)/MessageHandler.cpp
 OBJS = $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 DEPS = $(OBJS:.o=.d)
 
