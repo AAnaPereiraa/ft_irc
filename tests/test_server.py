@@ -896,17 +896,40 @@ class TestRegistration(ReplyTestCase):
         # expect_none() parses every line, which checks the 512-byte limit.
         self.expect_none(s)
 
-    def test_join_before_registration(self):
-        """JOIN / PRIVMSG before registration -> 451"""
-        for line in (b"JOIN #x", b"PRIVMSG bob :hi"):
+    def test_known_commands_before_registration(self):
+        """known commands before registration -> 451"""
+        # Agreed in #23 / #38: a command we implement, but which needs
+        # registration, gets 451 (unknown ones get 421, see the review group).
+        for line in (b"JOIN #x", b"PART #x", b"PRIVMSG bob :hi", b"KICK #x bob",
+                     b"INVITE bob #x", b"TOPIC #x", b"MODE #x +i"):
             with self.subTest(line=line):
                 s = self.connect()
                 s.sendall(b"PASS testpass\r\n" + line + b"\r\n")
                 self.expect(s, "451")
 
+    def assert_no_reply(self, sock):
+        """Nothing at all comes back, and the connection stays open."""
+        raw = self.read_line(sock, QUIET)
+        self.assertIsNone(raw, "unexpected reply %r" % raw)
+        self.assert_still_open(sock)
+
+    def test_notice_before_registration_silent(self):
+        """NOTICE before registration: no reply"""
+        # RFC 2812 3.3.2: servers MUST NOT send error replies to a NOTICE,
+        # so not even 451.
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNOTICE bob :hi\r\n")
+        self.assert_no_reply(s)
+
+    def test_notice_unknown_target_silent(self):
+        """NOTICE to unknown nick: no reply (no 401)"""
+        s = self.register("mona")
+        s.sendall(b"NOTICE nobody :hi\r\n")
+        self.assert_no_reply(s)
+
 
 class TestRegistrationReview(ReplyTestCase):
-    """requested in the reviews of #37 and #38"""
+    """agreed in the reviews of #37 and #38"""
     title = "Registration (review)"
 
     def test_nick_change_is_echoed(self):
@@ -924,13 +947,21 @@ class TestRegistrationReview(ReplyTestCase):
         s.sendall(b"PASS testpass\r\nUSER first 0 * :First\r\nUSER second 0 * :Second\r\n")
         self.expect(s, "462")
 
-    def test_notice_before_registration(self):
-        """NOTICE / WHO before registration -> 451"""
-        for line in (b"NOTICE bob :hi", b"WHO bob"):
-            with self.subTest(line=line):
-                s = self.connect()
-                s.sendall(b"PASS testpass\r\n" + line + b"\r\n")
-                self.expect(s, "451")
+    def test_unknown_command(self):
+        """unknown command -> 421, registered or not"""
+        # Agreed in #23 / #38: unknown commands get 421 even before
+        # registration (irssi/HexChat send CAP LS first and carry on).
+        for registered, line in ((False, b"FOO bar"), (False, b"CAP LS 302"),
+                                 (True, b"FOO bar")):
+            with self.subTest(registered=registered, line=line):
+                if registered:
+                    s = self.register("nora")
+                else:
+                    s = self.connect()
+                    s.sendall(b"PASS testpass\r\n")
+                s.sendall(line + b"\r\n")
+                params = self.expect(s, "421")
+                self.assertEqual(params[1], line.split()[0].decode(), "421 names the command")
 
 
 class TestShutdown(unittest.TestCase):
