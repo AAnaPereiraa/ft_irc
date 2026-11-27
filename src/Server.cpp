@@ -22,6 +22,13 @@
 // leaves its loop normally, letting destructors close every fd.
 static volatile sig_atomic_t g_running = 1;
 
+// How long poll() may sleep before run() checks g_running again.
+// A signal handled after the `while (g_running)` check but before poll()
+// starts does not interrupt it, so an infinite timeout could miss the
+// shutdown and sleep forever. Waking once a second bounds that delay.
+// (The usual fixes -- self-pipe, ppoll, signalfd -- are not allowed.)
+static const int POLL_TIMEOUT_MS = 1000;
+
 static void handleStopSignal(int signum)
 {
 	(void)signum;
@@ -142,8 +149,10 @@ void Server::run()
 
 	while (g_running)
 	{
-		// The one and only poll(): sleep until some fd is ready (-1 = no timeout).
-		if (poll(&_pollFds[0], _pollFds.size(), -1) == -1)
+		// The one and only poll(): sleep until some fd is ready, or at most
+		// POLL_TIMEOUT_MS. A timeout returns 0 with every revents at 0, so
+		// the loop below does nothing and g_running is checked again.
+		if (poll(&_pollFds[0], _pollFds.size(), POLL_TIMEOUT_MS) == -1)
 		{
 			if (errno == EINTR)	// interrupted by a signal: re-check g_running
 				continue;
@@ -238,6 +247,17 @@ void Server::acceptClients()
 			continue;
 		}
 
+		// Convert the accepted IPv4 address to text. inet_ntoa uses a static buffer,
+		// so the address must be copied before another inet_ntoa call.
+		const char *peerAddress = inet_ntoa(addr.sin_addr);
+		// If conversion fails, report it and close the accepted socket.
+		if (peerAddress == NULL)
+		{
+			std::cerr << "inet_ntoa: could not convert client address" << std::endl;
+			close(fd);
+			continue;
+		}
+
 		pollfd entry;
 		entry.fd = fd;
 		entry.events = POLLIN;
@@ -249,7 +269,8 @@ void Server::acceptClients()
 		Client *client = NULL;
 		try
 		{
-			client = new Client(fd);
+			// Previously passed only fd; Client now copies the peer IP during construction.
+			client = new Client(fd, peerAddress);
 			_clients[fd] = client;
 			_pollFds.push_back(entry);
 		}
@@ -262,8 +283,9 @@ void Server::acceptClients()
 			return;	// out of memory: retry on the next POLLIN, don't spin here
 		}
 
+		// Previously called inet_ntoa again; log the IP already stored in Client.
 		std::cout << "Client connected: fd " << fd
-				  << " from " << inet_ntoa(addr.sin_addr) << std::endl;
+				  << " from " << client->getHostname() << std::endl;
 	}
 }
 
@@ -419,4 +441,38 @@ const std::string &Server::getPassword() const
 int Server::getListenFd() const
 {
 	return _listenFd;
+}
+
+static bool sameNickname(const std::string &first, const std::string &second)
+{
+    if (first.size() != second.size())
+        return (false);
+
+    for (std::string::size_type i = 0; i < first.size(); ++i)
+    {
+        unsigned char a = first[i];
+        unsigned char b = second[i];
+
+        if (a >= 'A' && a <= 'Z')
+            a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z')
+            b += 'a' - 'A';
+
+        if (a != b)
+            return (false);
+    }
+    return (true);
+}
+
+Client *Server::findClientByNick(const std::string &nick) const
+{
+    for (std::map<int, Client *>::const_iterator it = _clients.begin();
+         it != _clients.end(); ++it)
+    {
+        Client *client = it->second;
+
+        if (client->hasNickname() && sameNickname(client->getNickname(), nick))
+            return (client);
+    }
+    return (NULL);
 }

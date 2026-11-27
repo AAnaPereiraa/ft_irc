@@ -5,13 +5,15 @@ Each test starts the real ./ircserv, talks to it over TCP like an IRC client
 would, and checks what the server does. Only the Python standard library is
 used, so it runs anywhere python3 is installed (including GitHub Actions).
 
-The server does not send replies yet, so the tests rely on the one thing we
-can observe from outside: whether the server keeps a connection open or
-closes it. The rule we use is the 512-byte line limit: a client whose buffer
-reaches 512 bytes without a '\\n' gets disconnected. That lets us prove that
-a client was accepted, polled and read, and that buffering works across
-several recv() calls. When commands start answering (PING -> PONG, 001...),
-add tests that check the replies.
+The connection tests rely on what we can observe without replies: whether
+the server keeps a connection open or closes it. The rule we use is the
+512-byte line limit: a client whose buffer reaches 512 bytes without a '\\n'
+gets disconnected. That proves a client was accepted, polled and read, and
+that buffering works across several recv() calls.
+
+The registration tests (ReplyTestCase) read the numeric replies. While the
+server does not answer yet (dispatcher not wired, #24) they are skipped
+with a visible reason, and run by themselves once it does.
 
 Everything runs twice: once normally, then with the server under valgrind
 (memory leaks, memory errors, sockets left open). Full logs of every server
@@ -650,6 +652,318 @@ class TestLineLimit(IrcTestCase):
         self.assert_closed_by_server(s)
 
 
+class ReplyTestCase(IrcTestCase):
+    """Base for tests that read the server's replies.
+
+    Until the dispatcher is connected to the event loop (issue #24) the
+    server sends nothing back. setUpClass probes for that once: if a bare
+    "PASS" (which must always get 461) gets no answer, every test in the
+    class is skipped with a visible reason instead of failing. The tests
+    switch on by themselves as soon as the server starts replying."""
+
+    skip_reason = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        probe = socket.create_connection(("127.0.0.1", cls.server.port), timeout=TIMEOUT)
+        try:
+            probe.sendall(b"PASS\r\n")
+            probe.settimeout(5.0 if USE_VALGRIND else 1.5)
+            try:
+                answered = probe.recv(4096) != b""
+            except socket.timeout:
+                answered = False
+        finally:
+            probe.close()
+        cls.skip_reason = None if answered else \
+            "server sends no replies yet (dispatcher not wired, #24)"
+
+    def setUp(self):
+        super().setUp()
+        self.inbox = {}             # socket -> bytes received, not yet split
+        if self.skip_reason:
+            self.skipTest(self.skip_reason)
+
+    # --- reading replies ---------------------------------------------------
+
+    def read_line(self, sock, timeout):
+        """Next full line from the server (with its "\\r\\n"), or None."""
+        buf = self.inbox.get(sock, b"")
+        deadline = time.time() + timeout
+        while b"\n" not in buf:
+            left = deadline - time.time()
+            if left <= 0:
+                self.inbox[sock] = buf
+                return None
+            sock.settimeout(left)
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except ConnectionResetError:
+                chunk = b""
+            if chunk == b"":
+                self.inbox[sock] = buf
+                return None         # closed: callers treat it like silence
+            buf += chunk
+        line, buf = buf.split(b"\n", 1)
+        self.inbox[sock] = buf
+        return line + b"\n"
+
+    def parse(self, raw):
+        """b":srv 001 ana :Welcome" -> ("001", ["ana", "Welcome"])."""
+        self.assertTrue(raw.endswith(b"\r\n"), "reply not ended by \\r\\n: %r" % raw)
+        self.assertLessEqual(len(raw), MAX_LINE, "reply longer than 512 bytes: %r" % raw[:80])
+        text = raw[:-2].decode("utf-8", "replace")
+        if text.startswith(":"):
+            text = text.split(" ", 1)[1] if " " in text else ""
+        head, _, trailing = text.partition(" :")
+        words = head.split()
+        params = words[1:] + ([trailing] if _ else [])
+        return (words[0] if words else ""), params
+
+    def expect(self, sock, code):
+        """Read until reply `code` arrives; return its params. Every line
+        read on the way is checked for "\\r\\n" and the 512-byte limit."""
+        seen = []
+        while True:
+            raw = self.read_line(sock, TIMEOUT)
+            if raw is None:
+                self.fail("expected %s, got %s" % (code, ", ".join(seen) or "nothing"))
+            got, params = self.parse(raw)
+            if got == code:
+                return params
+            seen.append(got)
+
+    def expect_none(self, sock, *codes):
+        """None of `codes` may arrive within QUIET (closing is also fine)."""
+        while True:
+            raw = self.read_line(sock, QUIET)
+            if raw is None:
+                return
+            got, params = self.parse(raw)
+            self.assertNotIn(got, codes, "unexpected %s %r" % (got, params))
+
+    def codes_until(self, sock, last):
+        """Every reply code read until `last` arrives (inclusive)."""
+        codes = []
+        while not codes or codes[-1] != last:
+            raw = self.read_line(sock, TIMEOUT)
+            if raw is None:
+                self.fail("expected %s, got %s" % (last, ", ".join(codes) or "nothing"))
+            codes.append(self.parse(raw)[0])
+        return codes
+
+    # --- registering ---------------------------------------------------------
+
+    def register(self, nick, user="user"):
+        """New client that completed PASS/NICK/USER and got its welcome."""
+        s = self.connect()
+        s.sendall(("PASS %s\r\nNICK %s\r\nUSER %s 0 * :Real Name\r\n"
+                   % (PASSWORD, nick, user)).encode())
+        self.expect(s, "004")
+        return s
+
+
+class TestRegistration(ReplyTestCase):
+    """PASS / NICK / USER and welcome 001-004 (issues #14, #15)"""
+    title = "Registration"
+
+    def test_welcome_pass_nick_user(self):
+        """PASS NICK USER -> 001 002 003 004"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK ana\r\nUSER anau 0 * :Ana P\r\n")
+        self.assertEqual(self.codes_until(s, "004"), ["001", "002", "003", "004"])
+
+    def test_welcome_pass_user_nick(self):
+        """PASS USER NICK -> 001 002 003 004"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nUSER bobu 0 * :Bob\r\nNICK bob\r\n")
+        self.assertEqual(self.codes_until(s, "004"), ["001", "002", "003", "004"])
+
+    def test_welcome_identity(self):
+        """001 addressed to nick, names nick!user@host"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK carl\r\nUSER carlu 0 * :Carl\r\n")
+        params = self.expect(s, "001")
+        self.assertEqual(params[0], "carl", "001 target")
+        self.assertIn("carl!carlu@", params[-1], "001 text")
+
+    def test_welcome_sent_once(self):
+        """second USER -> 462, no second welcome"""
+        s = self.register("dora")
+        s.sendall(b"USER again 0 * :Again\r\n")
+        self.expect(s, "462")
+        self.expect_none(s, "001")
+
+    def test_steps_alone_do_not_register(self):
+        """NICK alone / USER alone: no welcome"""
+        a = self.connect()
+        a.sendall(b"PASS testpass\r\nNICK lone\r\n")
+        b = self.connect()
+        b.sendall(b"PASS testpass\r\nUSER lone 0 * :Lone\r\n")
+        self.expect_none(a, "001")
+        self.expect_none(b, "001")
+
+    def test_pass_without_param(self):
+        """PASS without parameter -> 461"""
+        s = self.connect()
+        s.sendall(b"PASS\r\n")
+        self.assertEqual(self.expect(s, "461")[:2], ["*", "PASS"])
+
+    def test_wrong_password(self):
+        """wrong PASS -> 464, never welcomed"""
+        s = self.connect()
+        s.sendall(b"PASS wrong\r\nNICK eve\r\nUSER eve 0 * :Eve\r\n")
+        self.expect(s, "464")
+        self.expect_none(s, "001")
+
+    def test_no_password(self):
+        """NICK + USER without PASS: never welcomed"""
+        s = self.connect()
+        s.sendall(b"NICK frank\r\nUSER frank 0 * :Frank\r\n")
+        self.expect_none(s, "001")
+
+    def test_pass_after_registration(self):
+        """PASS after registration -> 462"""
+        s = self.register("gina")
+        s.sendall(b"PASS testpass\r\n")
+        self.expect(s, "462")
+
+    def test_nick_without_param(self):
+        """NICK without parameter -> 431"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK\r\n")
+        self.expect(s, "431")
+
+    def test_invalid_nicknames(self):
+        """invalid nicknames -> 432"""
+        for nick in ("1abc", "-abc", "toolongnick", "a@b", "a.b", "a#b"):
+            with self.subTest(nick=nick):
+                s = self.connect()
+                s.sendall(("PASS testpass\r\nNICK %s\r\n" % nick).encode())
+                self.expect(s, "432")
+
+    def test_valid_special_nickname(self):
+        """nick with []\\`_^{|}- is accepted"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK [a]_^{|}-\r\nUSER sp 0 * :Sp\r\n")
+        self.assertEqual(self.expect(s, "001")[0], "[a]_^{|}-")
+
+    def test_nickname_in_use(self):
+        """nick in use (any case) -> 433"""
+        self.register("Hana")
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK hANA\r\n")
+        self.assertEqual(self.expect(s, "433")[1], "hANA")
+
+    def test_nickname_held_before_registration(self):
+        """unregistered client's nick is taken too"""
+        a = self.connect()
+        a.sendall(b"PASS testpass\r\nNICK ivan\r\n")
+        self.assert_still_open(a)
+        b = self.connect()
+        b.sendall(b"PASS testpass\r\nNICK ivan\r\n")
+        self.expect(b, "433")
+
+    def test_retry_after_nick_in_use(self):
+        """433, then another nick -> welcome"""
+        self.register("jack")
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK jack\r\nUSER jack 0 * :Jack\r\n")
+        self.expect(s, "433")
+        s.sendall(b"NICK jack2\r\n")
+        self.assertEqual(self.expect(s, "001")[0], "jack2")
+
+    def test_nickname_freed_on_disconnect(self):
+        """nick is free again after disconnect"""
+        s = self.register("kira")
+        s.close()
+        time.sleep(QUIET)
+        self.register("kira")
+
+    def test_user_not_enough_params(self):
+        """USER with 3 parameters -> 461"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nUSER a 0 *\r\n")
+        self.assertEqual(self.expect(s, "461")[1], "USER")
+
+    def test_long_username_reply_fits(self):
+        """long username: no reply over 512 bytes"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNICK long\r\nUSER " + b"u" * 450 + b" 0 * :Long\r\n")
+        # expect_none() parses every line, which checks the 512-byte limit.
+        self.expect_none(s)
+
+    def test_known_commands_before_registration(self):
+        """known commands before registration -> 451"""
+        # Agreed in #23 / #38: a command we implement, but which needs
+        # registration, gets 451 (unknown ones get 421, see the review group).
+        for line in (b"JOIN #x", b"PART #x", b"PRIVMSG bob :hi", b"KICK #x bob",
+                     b"INVITE bob #x", b"TOPIC #x", b"MODE #x +i"):
+            with self.subTest(line=line):
+                s = self.connect()
+                s.sendall(b"PASS testpass\r\n" + line + b"\r\n")
+                self.expect(s, "451")
+
+    def assert_no_reply(self, sock):
+        """Nothing at all comes back, and the connection stays open."""
+        raw = self.read_line(sock, QUIET)
+        self.assertIsNone(raw, "unexpected reply %r" % raw)
+        self.assert_still_open(sock)
+
+    def test_notice_before_registration_silent(self):
+        """NOTICE before registration: no reply"""
+        # RFC 2812 3.3.2: servers MUST NOT send error replies to a NOTICE,
+        # so not even 451.
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nNOTICE bob :hi\r\n")
+        self.assert_no_reply(s)
+
+    def test_notice_unknown_target_silent(self):
+        """NOTICE to unknown nick: no reply (no 401)"""
+        s = self.register("mona")
+        s.sendall(b"NOTICE nobody :hi\r\n")
+        self.assert_no_reply(s)
+
+
+class TestRegistrationReview(ReplyTestCase):
+    """agreed in the reviews of #37 and #38"""
+    title = "Registration (review)"
+
+    def test_nick_change_is_echoed(self):
+        """registered NICK change echoed to client"""
+        s = self.register("lena", user="lenau")
+        s.sendall(b"NICK lena2\r\n")
+        raw = self.read_line(s, TIMEOUT)
+        self.assertIsNotNone(raw, "no reply to NICK change")
+        self.assertTrue(raw.startswith(b":lena!lenau@"), "bad prefix: %r" % raw)
+        self.assertEqual(self.parse(raw), ("NICK", ["lena2"]))
+
+    def test_second_user_before_nick(self):
+        """second USER before NICK -> 462"""
+        s = self.connect()
+        s.sendall(b"PASS testpass\r\nUSER first 0 * :First\r\nUSER second 0 * :Second\r\n")
+        self.expect(s, "462")
+
+    def test_unknown_command(self):
+        """unknown command -> 421, registered or not"""
+        # Agreed in #23 / #38: unknown commands get 421 even before
+        # registration (irssi/HexChat send CAP LS first and carry on).
+        for registered, line in ((False, b"FOO bar"), (False, b"CAP LS 302"),
+                                 (True, b"FOO bar")):
+            with self.subTest(registered=registered, line=line):
+                if registered:
+                    s = self.register("nora")
+                else:
+                    s = self.connect()
+                    s.sendall(b"PASS testpass\r\n")
+                s.sendall(line + b"\r\n")
+                params = self.expect(s, "421")
+                self.assertEqual(params[1], line.split()[0].decode(), "421 names the command")
+
+
 class TestShutdown(unittest.TestCase):
     """SIGINT exits 0 and frees everything"""
     title = "Shutdown"
@@ -674,7 +988,8 @@ class TestShutdown(unittest.TestCase):
 
 
 # Display order.
-TEST_CLASSES = [TestArguments, TestConnections, TestInputBuffering, TestLineLimit, TestShutdown]
+TEST_CLASSES = [TestArguments, TestConnections, TestInputBuffering, TestLineLimit,
+                TestRegistration, TestRegistrationReview, TestShutdown]
 
 
 # ===========================================================================
@@ -728,10 +1043,13 @@ def print_summary(passes):
     all_ok = True
     for label, result, seconds, count in passes:
         failed = len(result.failed_tests)
+        skipped = len(result.skipped)
         bad = failed or result.failed_checks
         all_ok = all_ok and not bad
         # Pad before coloring: escape codes would break ljust().
-        status = "%d/%d passed" % (count - failed, count)
+        status = "%d/%d passed" % (count - failed - skipped, count)
+        if skipped:
+            status += ", %d skipped" % skipped
         if result.failed_checks:
             status += ", %d server check(s) failed" % result.failed_checks
         status = status.ljust(30)
