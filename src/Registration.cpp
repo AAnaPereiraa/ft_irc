@@ -158,6 +158,15 @@ bool Registration::handleNick(Server &server, Client &client, const Command &com
         return (false);
     }
 
+    // Previously changed the nick silently. Notify the registered client
+    // using its old identity before updating the nickname.
+    if (client.isRegistered())
+    {
+        std::string prefix = client.getNickname() + "!" + client.getUsername() + "@" + client.getHostname();
+
+        server.sendToClient(client, ":" + prefix + " NICK :" + nickname);
+    }
+
     client.setNickname(nickname);
     return (true);
 }

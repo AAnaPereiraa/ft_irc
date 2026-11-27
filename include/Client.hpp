@@ -10,6 +10,9 @@ class Client
 	private:
 		int			_fd;
 
+		// Stores the peer's textual IP for IRC prefixes; no DNS lookup is performed.
+		std::string _hostname;
+
 		// Bytes received but not yet processed. TCP is a byte stream, so one
 		// recv() may hold half a message, several messages, or both. Data
 		// stays here across poll() iterations until a full line has arrived.
@@ -32,10 +35,14 @@ class Client
 		Client &operator=(const Client &other);
 
 	public:
-		explicit Client(int fd);
+		// Previously accepted only fd; now also copies the peer IP into the client.
+		Client(int fd, const std::string &hostname);
 		~Client();
 
 		int		getFd() const;
+
+		// Returns the stored peer IP without allowing the caller to modify it.
+		const std::string &getHostname() const;
 
 		// Appends raw bytes from recv() to the input buffer.
 		void	appendToBuffer(const char *data, size_t len);
