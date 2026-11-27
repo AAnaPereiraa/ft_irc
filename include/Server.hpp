@@ -7,6 +7,7 @@
 # include <poll.h>
 
 class Client;
+class Channel;
 
 // Max IRC message length, "\r\n" included (RFC 2812, section 2.3).
 static const size_t	MAX_LINE_LEN = 512;
@@ -60,7 +61,9 @@ class Server
 
 		// Used for nickname collision checks and message recipient lookup.
 		// Returns NULL if not found; the caller must exclude itself when needed.
-		Client *findClientByNick(const std::string &nick) const;
+		Client				*findClientByNick(const std::string &nick) const;
+
+		Channel				*findChannelByName(const std::string &name) const;
 };
 
 #endif
