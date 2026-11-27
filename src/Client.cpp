@@ -10,6 +10,11 @@ void Client::markPasswordAccepted()
     _passwordAccepted = true;
 }
 
+void Client::clearPasswordAccepted()
+{
+    _passwordAccepted = false;
+}
+
 bool Client::hasNickname() const
 {
     return !_nickname.empty();

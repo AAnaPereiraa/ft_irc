@@ -61,6 +61,7 @@ class Client
 
 		bool				hasAcceptedPassword() const;
 		void				markPasswordAccepted();
+		void				clearPasswordAccepted();
 		bool				hasNickname() const;
 		const std::string	&getNickname() const;
 		void				setNickname(const std::string &nickname);
