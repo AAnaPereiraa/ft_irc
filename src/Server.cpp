@@ -238,6 +238,17 @@ void Server::acceptClients()
 			continue;
 		}
 
+		// Convert the accepted IPv4 address to text. inet_ntoa uses a static buffer,
+		// so the address must be copied before another inet_ntoa call.
+		const char *peerAddress = inet_ntoa(addr.sin_addr);
+		// If conversion fails, report it and close the accepted socket.
+		if (peerAddress == NULL)
+		{
+			std::cerr << "inet_ntoa: could not convert client address" << std::endl;
+			close(fd);
+			continue;
+		}
+
 		pollfd entry;
 		entry.fd = fd;
 		entry.events = POLLIN;
@@ -249,7 +260,8 @@ void Server::acceptClients()
 		Client *client = NULL;
 		try
 		{
-			client = new Client(fd);
+			// Previously passed only fd; Client now copies the peer IP during construction.
+			client = new Client(fd, peerAddress);
 			_clients[fd] = client;
 			_pollFds.push_back(entry);
 		}
@@ -262,8 +274,9 @@ void Server::acceptClients()
 			return;	// out of memory: retry on the next POLLIN, don't spin here
 		}
 
+		// Previously called inet_ntoa again; log the IP already stored in Client.
 		std::cout << "Client connected: fd " << fd
-				  << " from " << inet_ntoa(addr.sin_addr) << std::endl;
+				  << " from " << client->getHostname() << std::endl;
 	}
 }
 
@@ -419,4 +432,38 @@ const std::string &Server::getPassword() const
 int Server::getListenFd() const
 {
 	return _listenFd;
+}
+
+static bool sameNickname(const std::string &first, const std::string &second)
+{
+    if (first.size() != second.size())
+        return (false);
+
+    for (std::string::size_type i = 0; i < first.size(); ++i)
+    {
+        unsigned char a = first[i];
+        unsigned char b = second[i];
+
+        if (a >= 'A' && a <= 'Z')
+            a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z')
+            b += 'a' - 'A';
+
+        if (a != b)
+            return (false);
+    }
+    return (true);
+}
+
+Client *Server::findClientByNick(const std::string &nick) const
+{
+    for (std::map<int, Client *>::const_iterator it = _clients.begin();
+         it != _clients.end(); ++it)
+    {
+        Client *client = it->second;
+
+        if (client->hasNickname() && sameNickname(client->getNickname(), nick))
+            return (client);
+    }
+    return (NULL);
 }

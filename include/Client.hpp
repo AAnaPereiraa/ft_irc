@@ -10,6 +10,9 @@ class Client
 	private:
 		int			_fd;
 
+		// Stores the peer's textual IP for IRC prefixes; no DNS lookup is performed.
+		std::string _hostname;
+
 		// Bytes received but not yet processed. TCP is a byte stream, so one
 		// recv() may hold half a message, several messages, or both. Data
 		// stays here across poll() iterations until a full line has arrived.
@@ -20,15 +23,26 @@ class Client
 		// buffer is full), so the rest waits here for the next POLLOUT.
 		std::string	_outBuffer;
 
+		std::string	_nickname;
+		std::string	_username;
+		std::string	_realName;
+		bool		_passwordAccepted;
+		bool		_hasUserInfo;
+		bool		_registered;
+
 		// Not copyable: a copy would share the same socket fd.
 		Client(const Client &other);
 		Client &operator=(const Client &other);
 
 	public:
-		explicit Client(int fd);
+		// Previously accepted only fd; now also copies the peer IP into the client.
+		Client(int fd, const std::string &hostname);
 		~Client();
 
 		int		getFd() const;
+
+		// Returns the stored peer IP without allowing the caller to modify it.
+		const std::string &getHostname() const;
 
 		// Appends raw bytes from recv() to the input buffer.
 		void	appendToBuffer(const char *data, size_t len);
@@ -51,6 +65,20 @@ class Client
 
 		// Removes the first `count` bytes, i.e. the ones send() accepted.
 		void				consumeOutput(size_t count);
+
+		bool				hasAcceptedPassword() const;
+		void				markPasswordAccepted();
+		void				clearPasswordAccepted();
+		bool				hasNickname() const;
+		const std::string	&getNickname() const;
+		void				setNickname(const std::string &nickname);
+		bool				hasUserInfo() const;
+		const std::string	&getUsername() const;
+		const std::string	&getRealName() const;
+		void				setUserInfo(const std::string &username,
+								const std::string &realName);
+		bool				isRegistered() const;
+		bool				tryCompleteRegistration();
 };
 
 #endif

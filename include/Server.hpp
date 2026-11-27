@@ -37,7 +37,6 @@ class Server
 		void	disconnectClient(size_t index);
 		void	handleLine(Client &client, const std::string &line);
 
-		void	sendToClient(Client &client, const std::string &msg);
 		void	setPollOut(int fd, bool enable);
 		bool	flushClient(size_t index);
 
@@ -53,9 +52,15 @@ class Server
 		// Throws std::runtime_error if poll() itself fails.
 		void				run();
 
+		void				sendToClient(Client &client, const std::string &msg);
+
 		int					getPort() const;
 		const std::string	&getPassword() const;
 		int					getListenFd() const;
+
+		// Used for nickname collision checks and message recipient lookup.
+		// Returns NULL if not found; the caller must exclude itself when needed.
+		Client *findClientByNick(const std::string &nick) const;
 };
 
 #endif
