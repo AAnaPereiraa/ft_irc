@@ -8,7 +8,7 @@
 // RFC 2812, section 2.3.1: validates the USER <user> field.
 static bool isValidUsername(const std::string &username)
 {
-    if (username.empty())
+    if (username.empty() || username.size() > 10)
         return (false);
 
     for (std::string::size_type i = 0; i < username.size(); ++i)
@@ -27,6 +27,8 @@ bool Registration::handlePass(Server &server, Client &client, const Command &com
         server.sendToClient(client, Reply::numeric(serverName, client, "462", "", "Unauthorized command (already registered)"));
         return (false);
     }
+
+    client.clearPasswordAccepted();
 
     const std::vector<std::string> &params = command.getParams();
 
@@ -53,6 +55,13 @@ bool Registration::handleUser(Server &server, Client &client, const Command &com
         server.sendToClient(client, Reply::numeric(
             serverName, client, "462", "",
             "Unauthorized command (already registered)"));
+        return (false);
+    }
+
+    if (client.hasUserInfo())
+    {
+        server.sendToClient(client, Reply::numeric(
+            serverName, client, "462", "", "Unauthorized command (already registered)"));
         return (false);
     }
 
@@ -147,6 +156,15 @@ bool Registration::handleNick(Server &server, Client &client, const Command &com
     {
         server.sendToClient(client, Reply::numeric(serverName, client, "433", nickname, "Nickname is already in use"));
         return (false);
+    }
+
+    // Previously changed the nick silently. Notify the registered client
+    // using its old identity before updating the nickname.
+    if (client.isRegistered())
+    {
+        std::string prefix = client.getNickname() + "!" + client.getUsername() + "@" + client.getHostname();
+
+        server.sendToClient(client, ":" + prefix + " NICK :" + nickname);
     }
 
     client.setNickname(nickname);

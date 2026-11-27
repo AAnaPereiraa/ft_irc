@@ -10,6 +10,11 @@ void Client::markPasswordAccepted()
     _passwordAccepted = true;
 }
 
+void Client::clearPasswordAccepted()
+{
+    _passwordAccepted = false;
+}
+
 bool Client::hasNickname() const
 {
     return !_nickname.empty();
@@ -63,10 +68,10 @@ bool Client::tryCompleteRegistration()
     return true;
 }
 
-Client::Client(int fd)
-	: _fd(fd), _inBuffer(), _outBuffer(), _nickname(), _username(),
-	  _realName(), _passwordAccepted(false), _hasUserInfo(false),
-	  _registered(false)
+Client::Client(int fd, const std::string &hostname)
+    : _fd(fd), _hostname(hostname), _inBuffer(), _outBuffer(),
+      _nickname(), _username(), _realName(), _passwordAccepted(false),
+      _hasUserInfo(false), _registered(false)
 {}
 
 // The Server closes the fd, so the Client does not.
@@ -76,6 +81,11 @@ Client::~Client()
 int Client::getFd() const
 {
 	return _fd;
+}
+
+const std::string &Client::getHostname() const
+{
+    return (_hostname);
 }
 
 void Client::appendToBuffer(const char *data, size_t len)
